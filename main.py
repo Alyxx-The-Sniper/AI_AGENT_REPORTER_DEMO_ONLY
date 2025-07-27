@@ -127,7 +127,7 @@ def ai_agent_reporter(state: AgentState) -> AgentState:
     """Generates the initial news report from the transcription."""
     print("---GENERATING INITIAL REPORT---")
     system_prompt = f"""
-                    You are an expert news reporter. Your task is to write a clear, concise, and factual news report based on the following transcribed audio text.
+                    You are an expert news reporter. Based on the following transcribed audio, write a clear, concise, and factual headline and a brief news report. The report should be written in a professional tone, suitable for publication by a mainstream news outlet.
 
                     Transcribed text:
                     \"\"\"{state['transcribed_text']}\"\"\"
@@ -229,7 +229,7 @@ def handle_approval(current_state, chat_history):
 
 # --- Build the Gradio Interface ---
 with gr.Blocks(theme=gr.themes.Soft(), title="Audio News Reporter") as app:
-    gr.Markdown("# Audio News Reporter Agent (Multi lagguage)")
+    gr.Markdown("# Audio News Reporter Agent (Multilingual)")
     gr.Markdown("Upload or record audio, and the agent will generate a news report. You can then revise it with feedback or approve and save the final version.")
 
     with gr.Row():
@@ -238,7 +238,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Audio News Reporter") as app:
             generate_btn = gr.Button("Generate Report", variant="primary")
             gr.Markdown("---")
             gr.Markdown("### Controls")
-            feedback_box = gr.Textbox(lines=3, label="Revision Feedback", placeholder="e.g., 'Make the tone more formal.' or 'Focus on the financial impact.'", visible=False)
+            feedback_box = gr.Textbox(lines=3, label="Revision Feedback", placeholder="e.g., 'Make me a tagalog script for my live broadcast later base on the situation.'", visible=False)
             
             with gr.Row():
                 revise_btn = gr.Button("Revise Report", variant="secondary", visible=False)
@@ -274,3 +274,4 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Audio News Reporter") as app:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))  # Fallback for local dev
     app.launch(server_name="0.0.0.0", server_port=port)
+
