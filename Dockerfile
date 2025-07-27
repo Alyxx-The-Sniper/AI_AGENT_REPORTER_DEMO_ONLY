@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --upgrade pip
 
 # Use requirements.txt or pyproject.toml
-COPY requirement.txt .  # Or use pyproject.toml instead
+COPY requirement.txt .  
 RUN pip install -r requirement.txt
 
 # Expose the Gradio default port
