@@ -269,5 +269,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Audio News Reporter") as app:
         outputs=[chatbot, revise_btn, approve_btn, generate_btn]
     )
 
+
+
 if __name__ == "__main__":
-    app.launch(share=True)
+    port = int(os.environ.get("PORT", 7860))  # Fallback for local dev
+    app.launch(server_name="0.0.0.0", server_port=port)

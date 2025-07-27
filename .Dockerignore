@@ -5,7 +5,3 @@ temp_audio
 .gitignore
 .git
 .env
-.python-version
-pyproject.toml
-README.md
-uv.lock
