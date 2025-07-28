@@ -1,277 +1,311 @@
 import gradio as gr
 import os
 import requests
-import uuid
-from scipy.io.wavfile import write
-import numpy as np
-from typing import Annotated, Sequence, TypedDict, Optional, List
+import base64
+from typing import TypedDict, Optional, Sequence, Annotated
+from operator import add
 
-# --- Core Imports from Your Code ---
-from dotenv import load_dotenv
+# --- LangChain Core Imports ---
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph.message import add_messages
+from dotenv import load_dotenv
 
-# --- Load Environment Variables ---
-# Make sure you have a .env file with your OPENAI_API_KEY and DEEPINFRA_API_KEY
 load_dotenv()
 
-# ==============================================================================
-# == YOUR LANGGRAPH AGENT CODE (with minor corrections and adjustments) ========
-# ==============================================================================
+# Get the API key
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise EnvironmentError("OPENAI_API_KEY not found in .env file.")
 
-# 1. State Definition
+# Instantiate the language model with the API key
+llm_openai = ChatOpenAI(
+    model="gpt-4o", 
+    temperature=0.2,
+    openai_api_key=OPENAI_API_KEY
+)
+
+# A separate LLM instance for vision tasks (same model, different settings)
+vision_llm = ChatOpenAI(
+    model="gpt-4o",
+    temperature=0,
+    openai_api_key=OPENAI_API_KEY
+)
+
+
+
 class AgentState(TypedDict):
-    audio_path: str
-    transcribed_text: str
-    news_report: Annotated[Sequence[BaseMessage], add_messages]
+    """Defines the state of our agent."""
+    audio_path: Optional[str]
+    image_path: Optional[str]
+    transcribed_text: Optional[str]
+    image_description: Optional[str]
+    news_report: Annotated[Sequence[BaseMessage], add]
     current_feedback: Optional[str]
-    # 'approve' flag is handled by the UI buttons instead of within the state
-    
-# 2. Node and Tool Functions
 
-def transcribe_fast(state: AgentState) -> AgentState:
-    """Transcribes the audio file using the DeepInfra API."""
-    print("---TRANSCRIBING AUDIO---")
-    # Corrected key access from audio_path to 'audio_path'
-    audio_path = state['audio_path']
 
-    # Ensure API key is available
-    DEEPINFRA_API_KEY = os.environ.get("DEEPINFRA_API_KEY")
-    if not DEEPINFRA_API_KEY:
-        raise ValueError("DEEPINFRA_API_KEY not found in environment variables.")
 
-    API_URL = "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3-turbo"
-    headers = {"Authorization": f"Bearer {DEEPINFRA_API_KEY}"}
-    
+import os
+from openai import OpenAI
+import requests
+
+def transcribe_fast(state: dict) -> dict:
+    """Transcribes the audio file with OpenAI Whisper."""
+    print("---TRANSCRIBING AUDIO (OpenAI Whisper)---")
+    audio_path = state.get("audio_path")
+    if not audio_path:
+        print("No audio path found in state.")
+        return state
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    if not client.api_key:
+        print("OPENAI_API_KEY environment variable not set.")
+        state["transcribed_text"] = "Error: Missing OPENAI_API_KEY."
+        return state
+
     try:
         with open(audio_path, "rb") as audio_file:
-            files = {"audio": (os.path.basename(audio_path), audio_file, 'audio/wav')}
-            print(f"Uploading '{audio_path}' to DeepInfra for transcription...")
-            
-            response = requests.post(API_URL, headers=headers, files=files)
-            response.raise_for_status()
-            
-            result = response.json()
-            transcribed_text = result.get("text", "Transcription failed.")
-            
+            print(f"Uploading '{audio_path}' to OpenAI Whisper...")
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+            state["transcribed_text"] = transcription.strip()
             print("Transcription successful!")
-            print(f"Result: {transcribed_text[:200]}...")
-
-            # Update the state with the result
-            state['transcribed_text'] = transcribed_text
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling DeepInfra API: {e}")
-        state['transcribed_text'] = f"Error during transcription: {e}"
-    except FileNotFoundError:
-        print(f"Error: Audio file not found at {audio_path}")
-        state['transcribed_text'] = "Error: Audio file not found."
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        state["transcribed_text"] = f"Error during transcription: {e}"
 
     return state
 
-# Define LLM and Tools
-llm_openai = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7)
+
+####################################################
+@tool
+def describe_image_node(state: AgentState) -> AgentState:
+    """Describes the image like a news anchor, reporter, and journalist using a multimodal LLM if an image_path is present."""
+    image_path = state.get('image_path')
+    if not image_path:
+        print("---NO IMAGE PROVIDED, SKIPPING DESCRIPTION---")
+        state['image_description'] = None
+        return state
+
+    print("---DESCRIBING IMAGE---")
+    try:
+        with open(image_path, "rb") as image_file:
+            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": "You are a new's anchor, reporter, and journalist. Describe this image for a news report. Focus on key objects, people, actions, and the overall setting. Be factual and objective."},
+                # CORRECTED: The value for 'image_url' must be an object with a 'url' key.
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+            ]
+        )
+        response = vision_llm.invoke([message])
+        description = response.content
+        print(f"Image Description Generated: {description[:150]}...")
+        state['image_description'] = description
+
+    except FileNotFoundError:
+        print(f"Error: Image file not found at {image_path}")
+        state['image_description'] = "Error: Image file not found."
+    except Exception as e:
+        print(f"An error occurred during image description: {e}")
+        state['image_description'] = f"Error during image description: {e}"
+
+    return state
+
+
+def ai_agent_reporter(state: AgentState) -> AgentState:
+    """Generates the news report from transcription and/or image description."""
+    print("---GENERATING INITIAL NEWS REPORT---")
+    context_parts = ["You are an expert news reporter. Your task is to write a clear, concise, and factual news report based on the following information.\n"]
+
+    transcribed_text = state.get('transcribed_text')
+    image_description = state.get('image_description')
+
+    if not transcribed_text and not image_description:
+        report_content = "No input provided. Please provide an audio file or an image to generate a report."
+    else:
+        if transcribed_text:
+            context_parts.append(f"--- Transcribed Audio ---\n\"{transcribed_text}\"\n")
+        if image_description:
+            context_parts.append(f"--- Image Description ---\n\"{image_description}\"\n")
+        
+        context_parts.append("Present the information as a professional news report. If you have both audio and an image description, synthesize them into a single, coherent story.")
+        
+        prompt = SystemMessage(content="\n".join(context_parts))
+        response = llm_openai.invoke([prompt])
+        report_content = response.content
+
+    state["news_report"].append(AIMessage(content=report_content))
+    return state
 
 @tool
-def revise(transcribed_text: str, last_report: str, feedback: str) -> str:
-    """
-    Revise the news report based on feedback.
-    (Function signature modified for direct calls from Gradio)
-    """
-    print("---REVISING REPORT---")
-    human_input = f"""
-                You are a professional news editor.
+def revise(state: AgentState) -> AgentState:
+    """Revise the news report based on the latest feedback."""
+    print("---REVISING NEWS REPORT---")
+    transcribed = state.get("transcribed_text", "Not available.")
+    latest_report_msg = next((msg for msg in reversed(state["news_report"]) if isinstance(msg, AIMessage)), None)
+    last_report = latest_report_msg.content if latest_report_msg else "No report yet."
+    feedback = state.get("current_feedback", "No feedback provided.")
 
-                Here is the original transcribed text of an audio report:
-                \"\"\"{transcribed_text}\"\"\"
+    prompt = f"""You are a professional news editor.
+Revise the news report to address the feedback. Ensure clarity, grammar, and style are improved, while staying faithful to the original transcription.
 
-                Here is the current draft of the news report that needs revision:
-                \"\"\"{last_report}\"\"\"
+**Original Transcription:**
+"{transcribed}"
 
-                Here is the feedback on what to change:
-                \"\"\"{feedback}\"\"\"
+**Current Draft of News Report:**
+"{last_report}"
 
-                Please provide a new, revised version of the news report that addresses the feedback.
-                Ensure the revised report maintains clarity, correct grammar, and a professional style, while staying faithful to the original transcription.
-                """
-    
-    response = llm_openai.invoke([HumanMessage(content=human_input)])
-    return response.content
+**Latest Human Feedback:**
+"{feedback}"
+
+Provide only the full, revised news report as your response.
+"""
+    response = llm_openai.invoke([HumanMessage(content=prompt)])
+    state["news_report"].append(response)
+    return state
 
 @tool
-def save(final_text: str) -> str:
-    """
-    Save the latest news report to a text file.
-    (Function signature modified for direct calls from Gradio)
-    """
+def save(state: AgentState) -> str:
+    """Save the latest news report to a text file."""
     print("---SAVING REPORT---")
     output_dir = "saved_reports"
     os.makedirs(output_dir, exist_ok=True)
 
-    if not final_text:
+    latest_report_msg = next((msg for msg in reversed(state["news_report"]) if isinstance(msg, AIMessage)), None)
+    if not latest_report_msg:
         return "No report available to save."
 
-    # Use a unique filename to avoid overwriting
-    filename = os.path.join(output_dir, f"news_report_{uuid.uuid4().hex[:8]}.txt")
-
+    final_text = latest_report_msg.content
+    filename = os.path.join(output_dir, "news_report.txt")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(final_text)
     
-    print(f"Report saved to {filename}")
-    return f"✅ Report successfully saved to: `{filename}`"
-
-
-def ai_agent_reporter(state: AgentState) -> AgentState:
-    """Generates the initial news report from the transcription."""
-    print("---GENERATING INITIAL REPORT---")
-    system_prompt = f"""
-                    You are an expert news reporter. Based on the following transcribed audio, write a clear, concise, and factual headline and a brief news report. The report should be written in a professional tone, suitable for publication by a mainstream news outlet.
-
-                    Transcribed text:
-                    \"\"\"{state['transcribed_text']}\"\"\"
-
-                    Present the information as a professional news report.
-                    """
-    messages = [SystemMessage(content=system_prompt)]
-    response = llm_openai.invoke(messages)
-    
-    # Append the new report to the message history
-    state["news_report"].append(AIMessage(content=response.content))
-    return state
-
-
-
+    print(f"Report saved to: {filename}")
+    return f"✅ News report successfully saved to: {filename}"
 
 # ==============================================================================
-# == GRADIO APPLICATION ========================================================
+#  GRADIO UI AND HANDLER FUNCTIONS
 # ==============================================================================
 
-def process_audio(audio_input, chat_history):
-    """
-    Gradio handler: Transcribes audio and generates the first report.
-    """
-    if audio_input is None:
-        return chat_history, None, "Please provide audio first.", gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True)
-
-    chat_history = [] # Reset for new report
+def get_latest_report(state: AgentState) -> str:
+    """Helper to extract the most recent AI message from the state."""
+    if not state or not state.get("news_report"):
+        return "No report generated yet."
     
-    # Save microphone input to a temporary WAV file
-    if isinstance(audio_input, tuple):
-        sample_rate, audio_data = audio_input
-        # Use a unique filename for the temp audio
-        temp_dir = "temp_audio"
-        os.makedirs(temp_dir, exist_ok=True)
-        audio_path = os.path.join(temp_dir, f"temp_mic_input_{uuid.uuid4().hex}.wav")
-        write(audio_path, sample_rate, audio_data.astype(np.int16))
-    else:
-        audio_path = audio_input # Path is provided directly for file uploads
+    latest_ai_messages = [msg for msg in state["news_report"] if isinstance(msg, AIMessage)]
+    return latest_ai_messages[-1].content if latest_ai_messages else "Waiting for report generation..."
 
+def generate_report_workflow(audio_filepath, image_filepath):
+    """Handles the initial report generation."""
+    if not audio_filepath and not image_filepath:
+        # MODIFIED: Added another empty string for the new transcription output
+        return None, "Upload a file to begin.", "", gr.update(visible=False), "Upload a file to begin."
+    
     # 1. Initialize state
-    initial_state = AgentState(
-        audio_path=audio_path,
-        transcribed_text="",
+    state = AgentState(
+        audio_path=audio_filepath,
+        image_path=image_filepath,
         news_report=[],
-        current_feedback=None
     )
 
-    # 2. Run transcription
-    state_after_transcription = transcribe_fast(initial_state)
-    chat_history.append((None, f"**🎤 Transcription:**\n\n>_{state_after_transcription['transcribed_text']}_"))
+    # 2. Run sequential processing
+    if state.get('audio_path'):
+        state = transcribe_fast(state)
+    if state.get('image_path'):
+        state = describe_image_node.func(state)
     
-    # 3. Generate the first report
-    state_after_report = ai_agent_reporter(state_after_transcription)
-    first_report = state_after_report["news_report"][-1].content
-    chat_history.append((None, f"**✍️ First Draft:**\n\n{first_report}"))
+    state = ai_agent_reporter(state)
     
-    # Clean up temporary mic file
-    if isinstance(audio_input, tuple) and os.path.exists(audio_path):
-        os.remove(audio_path)
+    # 3. Get results and update UI
+    report_text = get_latest_report(state)
+    # NEW: Get the transcribed text from the state
+    transcribed_text = state.get("transcribed_text", "No audio was provided for transcription.")
+    
+    # MODIFIED: Added transcribed_text to the return values
+    return state, report_text, transcribed_text, gr.update(visible=True), "Initial report generated. Ready for feedback."
 
-    return chat_history, state_after_report, "", gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+def revise_report_workflow(feedback: str, current_state: AgentState):
+    """Handles the revision workflow."""
+    if not feedback.strip():
+        return current_state, get_latest_report(current_state), "⚠️ Please provide feedback to revise the report."
+    
+    current_state["current_feedback"] = feedback
+    revised_state = revise.func(current_state)
+    
+    report_text = get_latest_report(revised_state)
+    return revised_state, report_text, "✅ Report revised. You can provide more feedback or save."
 
-def handle_revision(feedback_text, current_state, chat_history):
-    """
-    Gradio handler: Takes user feedback and calls the revise tool.
-    """
-    if not feedback_text:
-        return chat_history, current_state, "Please enter your feedback for the revision."
-    
-    chat_history.append((feedback_text, None))
+def save_report_workflow(current_state: AgentState):
+    """Handles the save workflow."""
+    if not current_state:
+        return "No report available to save."
+    status_message = save.func(current_state)
+    return status_message
 
-    # Get the necessary data from the state
-    transcribed_text = current_state['transcribed_text']
-    last_report = current_state['news_report'][-1].content
-    
-    # Call the revise tool directly
-    revised_content = revise.func(transcribed_text, last_report, feedback_text)
-    
-    # Update state and chat
-    current_state['news_report'].append(AIMessage(content=revised_content))
-    chat_history.append((None, f"**🔄 Revised Draft:**\n\n{revised_content}"))
-    
-    return chat_history, current_state, "" # Clear feedback box
 
-def handle_approval(current_state, chat_history):
-    """
-    Gradio handler: Saves the final report.
-    """
-    final_report_text = current_state['news_report'][-1].content
+# --- Gradio Interface ---
+with gr.Blocks(theme=gr.themes.Soft(), title="Multi-Modal News Reporter") as app:
+    agent_state = gr.State(value=None)
     
-    # Call the save tool directly
-    save_message = save.func(final_report_text)
+    gr.Markdown("# 🤖 Multi-Modal News Reporter Agent")
+    gr.Markdown("Upload an audio recording and/or an image to generate a news report. You can then provide feedback to revise the report.")
     
-    chat_history.append((None, save_message))
-    
-    # Disable buttons after saving
-    return chat_history, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False)
-
-# --- Build the Gradio Interface ---
-with gr.Blocks(theme=gr.themes.Soft(), title="Audio News Reporter") as app:
-    gr.Markdown("# Audio News Reporter Agent (Multilingual)")
-    gr.Markdown("Upload or record audio, and the agent will generate a news report. You can then revise it with feedback or approve and save the final version.")
-
     with gr.Row():
-        with gr.Column(scale=1):
-            audio_input = gr.Audio(sources=["upload", "microphone"], type="numpy", label="Upload or Record Audio")
-            generate_btn = gr.Button("Generate Report", variant="primary")
-            gr.Markdown("---")
-            gr.Markdown("### Controls")
-            feedback_box = gr.Textbox(lines=3, label="Revision Feedback", placeholder="e.g., 'Make me a tagalog script for my live broadcast later base on the situation.'", visible=False)
-            
-            with gr.Row():
-                revise_btn = gr.Button("Revise Report", variant="secondary", visible=False)
-                approve_btn = gr.Button("Approve & Save", variant="primary", visible=False)
+        audio_input = gr.Audio(type="filepath", label="Field Reporter's Audio")
+        image_input = gr.Image(type="filepath", label="Photojournalist's Image")
 
-        with gr.Column(scale=2):
-            chatbot = gr.Chatbot(label="Agent Output", height=600)
-            
-    # State object to hold the agent's state across interactions
-    agent_state = gr.State()
+    generate_btn = gr.Button("Generate Initial Report", variant="primary", scale=1)
     
-    # Wire up the components
+    gr.Markdown("---")
+    
+    # NEW: Added a Row to display transcription and report side-by-side
+    with gr.Row():
+        transcription_display = gr.Textbox(
+            label="📝 Raw Transcription", 
+            interactive=False, 
+            lines=15,
+            show_copy_button=True
+        )
+        report_display = gr.Textbox(
+            label="📰 Generated News Report", 
+            interactive=False, 
+            lines=15, 
+            show_copy_button=True
+        )
+    
+    with gr.Group(visible=False) as revision_group:
+        gr.Markdown("### ✍️ Provide Feedback to Revise Report")
+        feedback_input = gr.Textbox(label="Your Feedback", placeholder="e.g., 'Make the tone more urgent.' or 'Clarify the second paragraph.'")
+        with gr.Row():
+            revise_btn = gr.Button("Revise Report")
+            save_btn = gr.Button("Save & Finish", variant="stop")
+            
+    status_display = gr.Textbox(label="Status", interactive=False)
+    
+    # --- Event Handler Logic ---
     generate_btn.click(
-        fn=process_audio,
-        inputs=[audio_input, chatbot],
-        outputs=[chatbot, agent_state, feedback_box, feedback_box, revise_btn, approve_btn]
+        fn=generate_report_workflow,
+        inputs=[audio_input, image_input],
+        # MODIFIED: Added the new transcription_display to the outputs
+        outputs=[agent_state, report_display, transcription_display, revision_group, status_display]
     )
     
     revise_btn.click(
-        fn=handle_revision,
-        inputs=[feedback_box, agent_state, chatbot],
-        outputs=[chatbot, agent_state, feedback_box]
+        fn=revise_report_workflow,
+        inputs=[feedback_input, agent_state],
+        outputs=[agent_state, report_display, status_display]
     )
-
-    approve_btn.click(
-        fn=handle_approval,
-        inputs=[agent_state, chatbot],
-        outputs=[chatbot, revise_btn, approve_btn, generate_btn]
+    
+    save_btn.click(
+        fn=save_report_workflow,
+        inputs=[agent_state],
+        outputs=[status_display]
     )
-
-
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))  # Fallback for local dev
-    app.launch(server_name="0.0.0.0", server_port=port)
-
+    app.launch()
