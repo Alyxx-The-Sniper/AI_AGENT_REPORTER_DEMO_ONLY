@@ -2,7 +2,11 @@ import gradio as gr
 import os
 import requests
 import base64
-from typing import TypedDict, Optional, Sequence, Annotated
+# from typing import TypedDict, Optional, Sequence, Annotated
+
+from typing_extensions import TypedDict, Annotated
+from typing import Optional, Sequence
+
 from operator import add
 
 # --- LangChain Core Imports ---
