@@ -687,6 +687,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "scipy" },
     { name = "torch" },
+    { name = "typing-extensions" },
 ]
 
 [package.metadata]
@@ -698,6 +699,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "scipy", specifier = ">=1.16.0" },
     { name = "torch", specifier = ">=2.7.1" },
+    { name = "typing-extensions", specifier = ">=4.14.1" },
 ]
 
 [[package]]

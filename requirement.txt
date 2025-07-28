@@ -5,3 +5,4 @@ langgraph
 python-dotenv
 scipy
 torch
+typing_extensions
